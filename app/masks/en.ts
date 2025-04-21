@@ -22,7 +22,7 @@ export const EN_MASKS: BuiltinMask[] = [
       frequency_penalty: 0,
       sendMemory: true,
       historyMessageCount: 8,
-      compressMessageLengthThreshold: 3000,
+      compressMessageLengthThreshold: 20000,
     },
     lang: "en",
     builtin: true,
