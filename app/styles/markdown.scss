@@ -457,7 +457,7 @@
 .markdown-body samp {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .markdown-body pre {
@@ -465,7 +465,7 @@
   margin-bottom: 0;
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 14px;
+  font-size: 12px;
   word-wrap: normal;
 }
 
@@ -803,7 +803,7 @@
 .markdown-body tt {
   padding: 0.2em 0.4em;
   margin: 0;
-  font-size: 100%;
+  font-size: 90%;
   white-space: break-spaces;
   background-color: var(--color-neutral-muted);
   border-radius: 6px;
