@@ -1,16 +1,10 @@
 "use client";
+import { ApiPath, DEEPSEEK_BASE_URL, OpenaiPath } from "@/app/constant";
 import {
-  ApiPath,
-  OPENAI_BASE_URL,
-  DEFAULT_MODELS,
-  OpenaiPath,
-  REQUEST_TIMEOUT_MS,
-} from "@/app/constant";
-import {
-  ChatMessageTool,
   useAccessStore,
   useAppConfig,
   useChatStore,
+  ChatMessageTool,
   usePluginStore,
 } from "@/app/store";
 import { streamWithThink } from "@/app/utils/chat";
@@ -19,7 +13,6 @@ import {
   getHeaders,
   LLMApi,
   LLMModel,
-  LLMUsage,
   SpeechOptions,
 } from "../api";
 import { getClientConfig } from "@/app/config/client";
@@ -45,14 +38,14 @@ export class DeepSeekApi implements LLMApi {
 
     if (baseUrl.length === 0) {
       const isApp = !!getClientConfig()?.isApp;
-      const apiPath = ApiPath.OpenAI;
-      baseUrl = isApp ? OPENAI_BASE_URL : apiPath;
+      const apiPath = ApiPath.DeepSeek;
+      baseUrl = isApp ? DEEPSEEK_BASE_URL : apiPath;
     }
 
     if (baseUrl.endsWith("/")) {
       baseUrl = baseUrl.slice(0, baseUrl.length - 1);
     }
-    if (!baseUrl.startsWith("http") && !baseUrl.startsWith(ApiPath.OpenAI)) {
+    if (!baseUrl.startsWith("http") && !baseUrl.startsWith(ApiPath.DeepSeek)) {
       baseUrl = "https://" + baseUrl;
     }
 
@@ -61,72 +54,47 @@ export class DeepSeekApi implements LLMApi {
     return [baseUrl, path].join("/");
   }
 
-  extractMessage(res: any) {
-    return res.choices?.at(0)?.message?.content ?? "";
+  async extractMessage(res: any) {
+    if (res.error) {
+      return "```\n" + JSON.stringify(res, null, 4) + "\n```";
+    }
+    // dalle3 model return url, using url create image message
+    if (res.data) {
+      let url = res.data?.at(0)?.url ?? "";
+      const b64_json = res.data?.at(0)?.b64_json ?? "";
+      if (!url && b64_json) {
+        // uploadImage
+        url = await uploadImage(base64Image2Blob(b64_json, "image/png"));
+      }
+      return [
+        {
+          type: "image_url",
+          image_url: {
+            url,
+          },
+        },
+      ];
+    }
+    return res.choices?.at(0)?.message?.content ?? res;
   }
 
-  speech(options: SpeechOptions): Promise<ArrayBuffer> {
-    throw new Error("Method not implemented.");
-  }
-
-  async chat(options: ChatOptions) {
-    const messages: ChatOptions["messages"] = [];
-    for (const v of options.messages) {
-      if (v.role === "assistant") {
-        const content = getMessageTextContentWithoutThinking(v);
-        messages.push({ role: v.role, content });
-      } else {
-        const content = getMessageTextContent(v);
-        messages.push({ role: v.role, content });
-      }
-    }
-
-    // 检测并修复消息顺序，确保除system外的第一个消息是user
-    const filteredMessages: ChatOptions["messages"] = [];
-    let hasFoundFirstUser = false;
-
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        // Keep all system messages
-        filteredMessages.push(msg);
-      } else if (msg.role === "user") {
-        // User message directly added
-        filteredMessages.push(msg);
-        hasFoundFirstUser = true;
-      } else if (hasFoundFirstUser) {
-        // After finding the first user message, all subsequent non-system messages are retained.
-        filteredMessages.push(msg);
-      }
-    }
-
-    const modelConfig = {
-      ...useAppConfig.getState().modelConfig,
-      ...useChatStore.getState().currentSession().mask.modelConfig,
-      ...{
-        model: options.config.model,
-        providerName: options.config.providerName,
-      },
+  async speech(options: SpeechOptions): Promise<ArrayBuffer> {
+    const requestPayload = {
+      model: options.model,
+      input: options.input,
+      voice: options.voice,
+      response_format: options.response_format,
+      speed: options.speed,
     };
 
-    const requestPayload: RequestPayload = {
-      messages: filteredMessages,
-      stream: options.config.stream,
-      model: modelConfig.model,
-      temperature: modelConfig.temperature,
-      presence_penalty: modelConfig.presence_penalty,
-      frequency_penalty: modelConfig.frequency_penalty,
-      top_p: modelConfig.top_p,
-    };
+    console.log("[Request] openai speech payload: ", requestPayload);
 
-    console.log("[Request] deepseek payload: ", requestPayload);
-
-    const shouldStream = !!options.config.stream;
     const controller = new AbortController();
     options.onController?.(controller);
 
     try {
-      const chatPath = this.path(OpenaiPath.ChatPath);
-      const chatPayload = {
+      const speechPath = this.path(OpenaiPath.SpeechPath);
+      const speechPayload = {
         method: "POST",
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
@@ -136,16 +104,131 @@ export class DeepSeekApi implements LLMApi {
       // make a fetch request
       const requestTimeoutId = setTimeout(
         () => controller.abort(),
-        getTimeoutMSByModel(options.config.model),
+        REQUEST_TIMEOUT_MS,
       );
 
+      const res = await fetch(speechPath, speechPayload);
+      clearTimeout(requestTimeoutId);
+      return await res.arrayBuffer();
+    } catch (e) {
+      console.log("[Request] failed to make a speech request", e);
+      throw e;
+    }
+  }
+
+  async chat(options: ChatOptions) {
+    const modelConfig = {
+      ...useAppConfig.getState().modelConfig,
+      ...useChatStore.getState().currentSession().mask.modelConfig,
+      ...{
+        model: options.config.model,
+        providerName: options.config.providerName,
+      },
+    };
+
+    let requestPayload: RequestPayload | DalleRequestPayload;
+
+    const isDalle3 = _isDalle3(options.config.model);
+    const isO1OrO3 =
+      options.config.model.startsWith("o1") ||
+      options.config.model.startsWith("o3") ||
+      options.config.model.startsWith("o4-mini");
+    if (isDalle3) {
+      const prompt = getMessageTextContent(
+        options.messages.slice(-1)?.pop() as any,
+      );
+      requestPayload = {
+        model: options.config.model,
+        prompt,
+        // URLs are only valid for 60 minutes after the image has been generated.
+        response_format: "b64_json", // using b64_json, and save image in CacheStorage
+        n: 1,
+        size: options.config?.size ?? "1024x1024",
+        quality: options.config?.quality ?? "standard",
+        style: options.config?.style ?? "vivid",
+      };
+    } else {
+      const visionModel = isVisionModel(options.config.model);
+      const messages: ChatOptions["messages"] = [];
+      for (const v of options.messages) {
+        const content = visionModel
+          ? await preProcessImageContent(v.content)
+          : getMessageTextContent(v);
+        if (!(isO1OrO3 && v.role === "system"))
+          messages.push({ role: v.role, content });
+      }
+
+      // O1 not support image, tools (plugin in ChatGPTNextWeb) and system, stream, logprobs, temperature, top_p, n, presence_penalty, frequency_penalty yet.
+      requestPayload = {
+        messages,
+        stream: options.config.stream,
+        model: modelConfig.model,
+        temperature: !isO1OrO3 ? modelConfig.temperature : 1,
+        presence_penalty: !isO1OrO3 ? modelConfig.presence_penalty : 0,
+        frequency_penalty: !isO1OrO3 ? modelConfig.frequency_penalty : 0,
+        top_p: !isO1OrO3 ? modelConfig.top_p : 1,
+        // max_tokens: Math.max(modelConfig.max_tokens, 1024),
+        // Please do not ask me why not send max_tokens, no reason, this param is just shit, I dont want to explain anymore.
+      };
+
+      // O1 使用 max_completion_tokens 控制token数 (https://platform.openai.com/docs/guides/reasoning#controlling-costs)
+      if (isO1OrO3) {
+        requestPayload["max_completion_tokens"] = modelConfig.max_tokens;
+      }
+
+      // add max_tokens to vision model
+      if (visionModel && !isO1OrO3) {
+        requestPayload["max_tokens"] = Math.max(modelConfig.max_tokens, 4000);
+      }
+    }
+
+    console.log("[Request] openai payload: ", requestPayload);
+
+    const shouldStream = !isDalle3 && !!options.config.stream;
+    const controller = new AbortController();
+    options.onController?.(controller);
+
+    try {
+      let chatPath = "";
+      if (modelConfig.providerName === ServiceProvider.Azure) {
+        // find model, and get displayName as deployName
+        const { models: configModels, customModels: configCustomModels } =
+          useAppConfig.getState();
+        const {
+          defaultModel,
+          customModels: accessCustomModels,
+          useCustomConfig,
+        } = useAccessStore.getState();
+        const models = collectModelsWithDefaultModel(
+          configModels,
+          [configCustomModels, accessCustomModels].join(","),
+          defaultModel,
+        );
+        const model = models.find(
+          (model) =>
+            model.name === modelConfig.model &&
+            model?.provider?.providerName === ServiceProvider.Azure,
+        );
+        chatPath = this.path(
+          (isDalle3 ? Azure.ImagePath : Azure.ChatPath)(
+            (model?.displayName ?? model?.name) as string,
+            useCustomConfig ? useAccessStore.getState().azureApiVersion : "",
+          ),
+        );
+      } else {
+        chatPath = this.path(
+          isDalle3 ? OpenaiPath.ImagePath : OpenaiPath.ChatPath,
+        );
+      }
       if (shouldStream) {
+        let index = -1;
         const [tools, funcs] = usePluginStore
           .getState()
           .getAsTools(
             useChatStore.getState().currentSession().mask?.plugin || [],
           );
-        return streamWithThink(
+        // console.log("getAsTools", tools, funcs);
+        streamWithThink(
           chatPath,
           requestPayload,
           getHeaders(),
@@ -154,20 +237,24 @@ export class DeepSeekApi implements LLMApi {
           controller,
           // parseSSE
           (text: string, runTools: ChatMessageTool[]) => {
+            // console.log("parseSSE", text, runTools);
             const json = JSON.parse(text);
             const choices = json.choices as Array<{
               delta: {
-                content: string | null;
+                content: string;
                 tool_calls: ChatMessageTool[];
                 reasoning_content: string | null;
               };
             }>;
+
+            if (!choices?.length) return { isThinking: false, content: "" };
+
             const tool_calls = choices[0]?.delta?.tool_calls;
             if (tool_calls?.length > 0) {
-              const index = tool_calls[0]?.index;
               const id = tool_calls[0]?.id;
               const args = tool_calls[0]?.function?.arguments;
               if (id) {
+                index += 1;
                 runTools.push({
                   id,
                   type: tool_calls[0]?.type,
@@ -181,6 +268,7 @@ export class DeepSeekApi implements LLMApi {
                 runTools[index]["function"]["arguments"] += args;
               }
             }
+
             const reasoning = choices[0]?.delta?.reasoning_content;
             const content = choices[0]?.delta?.content;
 
@@ -218,6 +306,8 @@ export class DeepSeekApi implements LLMApi {
             toolCallMessage: any,
             toolCallResult: any[],
           ) => {
+            // reset index value
+            index = -1;
             // @ts-ignore
             requestPayload?.messages?.splice(
               // @ts-ignore
@@ -230,11 +320,24 @@ export class DeepSeekApi implements LLMApi {
           options,
         );
       } else {
+        const chatPayload = {
+          method: "POST",
+          body: JSON.stringify(requestPayload),
+          signal: controller.signal,
+          headers: getHeaders(),
+        };
+
+        // make a fetch request
+        const requestTimeoutId = setTimeout(
+          () => controller.abort(),
+          getTimeoutMSByModel(options.config.model),
+        );
+
         const res = await fetch(chatPath, chatPayload);
         clearTimeout(requestTimeoutId);
 
         const resJson = await res.json();
-        const message = this.extractMessage(resJson);
+        const message = await this.extractMessage(resJson);
         options.onFinish(message, res);
       }
     } catch (e) {
@@ -242,15 +345,107 @@ export class DeepSeekApi implements LLMApi {
       options.onError?.(e as Error);
     }
   }
-
   async usage() {
-    return {
-      used: 0,
-      total: 0,
+    const formatDate = (d: Date) =>
+      `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d
+        .getDate()
+        .toString()
+        .padStart(2, "0")}`;
+    const ONE_DAY = 1 * 24 * 60 * 60 * 1000;
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startDate = formatDate(startOfMonth);
+    const endDate = formatDate(new Date(Date.now() + ONE_DAY));
+
+    const [used, subs] = await Promise.all([
+      fetch(
+        this.path(
+          `${OpenaiPath.UsagePath}?start_date=${startDate}&end_date=${endDate}`,
+        ),
+        {
+          method: "GET",
+          headers: getHeaders(),
+        },
+      ),
+      fetch(this.path(OpenaiPath.SubsPath), {
+        method: "GET",
+        headers: getHeaders(),
+      }),
+    ]);
+
+    if (used.status === 401) {
+      throw new Error(Locale.Error.Unauthorized);
+    }
+
+    if (!used.ok || !subs.ok) {
+      throw new Error("Failed to query usage from openai");
+    }
+
+    const response = (await used.json()) as {
+      total_usage?: number;
+      error?: {
+        type: string;
+        message: string;
+      };
     };
+
+    const total = (await subs.json()) as {
+      hard_limit_usd?: number;
+    };
+
+    if (response.error && response.error.type) {
+      throw Error(response.error.message);
+    }
+
+    if (response.total_usage) {
+      response.total_usage = Math.round(response.total_usage) / 100;
+    }
+
+    if (total.hard_limit_usd) {
+      total.hard_limit_usd = Math.round(total.hard_limit_usd * 100) / 100;
+    }
+
+    return {
+      used: response.total_usage,
+      total: total.hard_limit_usd,
+    } as LLMUsage;
   }
 
   async models(): Promise<LLMModel[]> {
-    return [];
+    if (this.disableListModels) {
+      return DEFAULT_MODELS.slice();
+    }
+
+    const res = await fetch(this.path(OpenaiPath.ListModelPath), {
+      method: "GET",
+      headers: {
+        ...getHeaders(),
+      },
+    });
+
+    const resJson = (await res.json()) as OpenAIListModelResponse;
+    const chatModels = resJson.data?.filter(
+      (m) => m.id.startsWith("gpt-") || m.id.startsWith("chatgpt-"),
+    );
+    console.log("[Models]", chatModels);
+
+    if (!chatModels) {
+      return [];
+    }
+
+    //由于目前 OpenAI 的 disableListModels 默认为 true，所以当前实际不会运行到这场
+    let seq = 1000; //同 Constant.ts 中的排序保持一致
+    return chatModels.map((m) => ({
+      name: m.id,
+      available: true,
+      sorted: seq++,
+      provider: {
+        id: "openai",
+        providerName: "OpenAI",
+        providerType: "openai",
+        sorted: 1,
+      },
+    }));
   }
 }
+export { OpenaiPath };

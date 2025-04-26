@@ -3,7 +3,6 @@
 import {
   ApiPath,
   OPENAI_BASE_URL,
-  DEEPSEEK_BASE_URL,
   DEFAULT_MODELS,
   OpenaiPath,
   Azure,
