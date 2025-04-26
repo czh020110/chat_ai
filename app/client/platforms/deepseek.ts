@@ -1,16 +1,11 @@
 "use client";
+// azure and openai, using same models. so using same LLMApi.
+import { ApiPath, DEEPSEEK_BASE_URL, DeepSeek } from "@/app/constant";
 import {
-  ApiPath,
-  OPENAI_BASE_URL,
-  DEFAULT_MODELS,
-  OpenaiPath,
-  REQUEST_TIMEOUT_MS,
-} from "@/app/constant";
-import {
-  ChatMessageTool,
   useAccessStore,
   useAppConfig,
   useChatStore,
+  ChatMessageTool,
   usePluginStore,
 } from "@/app/store";
 import { streamWithThink } from "@/app/utils/chat";
@@ -19,7 +14,6 @@ import {
   getHeaders,
   LLMApi,
   LLMModel,
-  LLMUsage,
   SpeechOptions,
 } from "../api";
 import { getClientConfig } from "@/app/config/client";
@@ -37,38 +31,28 @@ export class DeepSeekApi implements LLMApi {
   path(path: string): string {
     const accessStore = useAccessStore.getState();
 
-    let baseUrl = accessStore.deepseekUrl;
+    let baseUrl = "";
 
-    if (!baseUrl) {
-      console.error("[DeepSeek] No URL configured");
-      throw new Error("DeepSeek URL not configured");
+    if (accessStore.useCustomConfig) {
+      baseUrl = accessStore.deepseekUrl;
+    }
+
+    if (baseUrl.length === 0) {
+      const isApp = !!getClientConfig()?.isApp;
+      const apiPath = ApiPath.DeepSeek;
+      baseUrl = isApp ? DEEPSEEK_BASE_URL : apiPath;
     }
 
     if (baseUrl.endsWith("/")) {
       baseUrl = baseUrl.slice(0, baseUrl.length - 1);
     }
-    if (!baseUrl.startsWith("http")) {
+    if (!baseUrl.startsWith("http") && !baseUrl.startsWith(ApiPath.DeepSeek)) {
       baseUrl = "https://" + baseUrl;
     }
 
-    console.log("[DeepSeek Proxy Endpoint] ", baseUrl, path);
+    console.log("[Proxy Endpoint] ", baseUrl, path);
 
     return [baseUrl, path].join("/");
-  }
-
-  private getHeaders() {
-    const accessStore = useAccessStore.getState();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-
-    if (accessStore.deepseekUrl && accessStore.deepseekApiKey) {
-      headers["Authorization"] = `Bearer ${accessStore.deepseekApiKey}`;
-    } else {
-      headers["Authorization"] = `Bearer ${process.env.OPENAI_API_KEY}`;
-    }
-
-    return headers;
   }
 
   extractMessage(res: any) {
@@ -107,6 +91,7 @@ export class DeepSeekApi implements LLMApi {
         // After finding the first user message, all subsequent non-system messages are retained.
         filteredMessages.push(msg);
       }
+      // If hasFoundFirstUser is false and it is not a system message, it will be skipped.
     }
 
     const modelConfig = {
@@ -126,21 +111,23 @@ export class DeepSeekApi implements LLMApi {
       presence_penalty: modelConfig.presence_penalty,
       frequency_penalty: modelConfig.frequency_penalty,
       top_p: modelConfig.top_p,
+      // max_tokens: Math.max(modelConfig.max_tokens, 1024),
+      // Please do not ask me why not send max_tokens, no reason, this param is just shit, I dont want to explain anymore.
     };
 
-    console.log("[Request] deepseek payload: ", requestPayload);
+    console.log("[Request] openai payload: ", requestPayload);
 
     const shouldStream = !!options.config.stream;
     const controller = new AbortController();
     options.onController?.(controller);
 
     try {
-      const chatPath = this.path(OpenaiPath.ChatPath);
+      const chatPath = this.path(DeepSeek.ChatPath);
       const chatPayload = {
         method: "POST",
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
-        headers: this.getHeaders(),
+        headers: getHeaders(),
       };
 
       // make a fetch request
@@ -158,12 +145,13 @@ export class DeepSeekApi implements LLMApi {
         return streamWithThink(
           chatPath,
           requestPayload,
-          this.getHeaders(),
+          getHeaders(),
           tools as any,
           funcs,
           controller,
           // parseSSE
           (text: string, runTools: ChatMessageTool[]) => {
+            // console.log("parseSSE", text, runTools);
             const json = JSON.parse(text);
             const choices = json.choices as Array<{
               delta: {
@@ -252,7 +240,6 @@ export class DeepSeekApi implements LLMApi {
       options.onError?.(e as Error);
     }
   }
-
   async usage() {
     return {
       used: 0,
