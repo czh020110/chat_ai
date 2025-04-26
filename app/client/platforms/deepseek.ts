@@ -61,6 +61,21 @@ export class DeepSeekApi implements LLMApi {
     return [baseUrl, path].join("/");
   }
 
+  private getHeaders() {
+    const accessStore = useAccessStore.getState();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (accessStore.useCustomConfig) {
+      headers["Authorization"] = `Bearer ${accessStore.deepseekApiKey}`;
+    } else {
+      headers["Authorization"] = `Bearer ${process.env.OPENAI_API_KEY}`;
+    }
+
+    return headers;
+  }
+
   extractMessage(res: any) {
     return res.choices?.at(0)?.message?.content ?? "";
   }
@@ -130,7 +145,7 @@ export class DeepSeekApi implements LLMApi {
         method: "POST",
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
-        headers: getHeaders(),
+        headers: this.getHeaders(),
       };
 
       // make a fetch request
@@ -148,7 +163,7 @@ export class DeepSeekApi implements LLMApi {
         return streamWithThink(
           chatPath,
           requestPayload,
-          getHeaders(),
+          this.getHeaders(),
           tools as any,
           funcs,
           controller,
