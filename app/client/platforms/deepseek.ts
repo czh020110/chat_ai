@@ -1,6 +1,7 @@
 "use client";
 import {
   ApiPath,
+  DEEPSEEK_BASE_URL,
   OPENAI_BASE_URL,
   DEFAULT_MODELS,
   OpenaiPath,
@@ -46,7 +47,7 @@ export class DeepSeekApi implements LLMApi {
     if (baseUrl.length === 0) {
       const isApp = !!getClientConfig()?.isApp;
       const apiPath = ApiPath.OpenAI;
-      baseUrl = isApp ? OPENAI_BASE_URL : apiPath;
+      baseUrl = isApp ? DEEPSEEK_BASE_URL : apiPath;
     }
 
     if (baseUrl.endsWith("/")) {
