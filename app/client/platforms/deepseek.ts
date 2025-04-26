@@ -1,7 +1,6 @@
 "use client";
 import {
   ApiPath,
-  DEEPSEEK_BASE_URL,
   OPENAI_BASE_URL,
   DEFAULT_MODELS,
   OpenaiPath,
@@ -38,28 +37,38 @@ export class DeepSeekApi implements LLMApi {
   path(path: string): string {
     const accessStore = useAccessStore.getState();
 
-    let baseUrl = "";
+    let baseUrl = accessStore.deepseekUrl;
 
-    if (accessStore.useCustomConfig) {
-      baseUrl = accessStore.deepseekUrl;
-    }
-
-    if (baseUrl.length === 0) {
-      const isApp = !!getClientConfig()?.isApp;
-      const apiPath = ApiPath.OpenAI;
-      baseUrl = isApp ? DEEPSEEK_BASE_URL : apiPath;
+    if (!baseUrl) {
+      console.error("[DeepSeek] No URL configured");
+      throw new Error("DeepSeek URL not configured");
     }
 
     if (baseUrl.endsWith("/")) {
       baseUrl = baseUrl.slice(0, baseUrl.length - 1);
     }
-    if (!baseUrl.startsWith("http") && !baseUrl.startsWith(ApiPath.OpenAI)) {
+    if (!baseUrl.startsWith("http")) {
       baseUrl = "https://" + baseUrl;
     }
 
-    console.log("[Proxy Endpoint] ", baseUrl, path);
+    console.log("[DeepSeek Proxy Endpoint] ", baseUrl, path);
 
     return [baseUrl, path].join("/");
+  }
+
+  private getHeaders() {
+    const accessStore = useAccessStore.getState();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (accessStore.deepseekUrl && accessStore.deepseekApiKey) {
+      headers["Authorization"] = `Bearer ${accessStore.deepseekApiKey}`;
+    } else {
+      headers["Authorization"] = `Bearer ${process.env.OPENAI_API_KEY}`;
+    }
+
+    return headers;
   }
 
   extractMessage(res: any) {
@@ -131,7 +140,7 @@ export class DeepSeekApi implements LLMApi {
         method: "POST",
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
-        headers: getHeaders(),
+        headers: this.getHeaders(),
       };
 
       // make a fetch request
@@ -149,7 +158,7 @@ export class DeepSeekApi implements LLMApi {
         return streamWithThink(
           chatPath,
           requestPayload,
-          getHeaders(),
+          this.getHeaders(),
           tools as any,
           funcs,
           controller,
