@@ -1,10 +1,16 @@
 "use client";
 import { ApiPath, DEEPSEEK_BASE_URL, OpenaiPath } from "@/app/constant";
 import {
+  DEFAULT_MODELS,
+  Azure,
+  REQUEST_TIMEOUT_MS,
+  ServiceProvider,
+} from "@/app/constant";
+import {
+  ChatMessageTool,
   useAccessStore,
   useAppConfig,
   useChatStore,
-  ChatMessageTool,
   usePluginStore,
 } from "@/app/store";
 import { streamWithThink } from "@/app/utils/chat";
@@ -21,8 +27,60 @@ import {
   getMessageTextContentWithoutThinking,
   getTimeoutMSByModel,
 } from "@/app/utils";
-import { RequestPayload } from "./openai";
 import { fetch } from "@/app/utils/stream";
+
+import { collectModelsWithDefaultModel } from "@/app/utils/model";
+import {
+  preProcessImageContent,
+  uploadImage,
+  base64Image2Blob,
+} from "@/app/utils/chat";
+import { cloudflareAIGatewayUrl } from "@/app/utils/cloudflare";
+import { ModelSize, DalleQuality, DalleStyle } from "@/app/typing";
+
+import {
+  LLMUsage,
+  MultimodalContent,
+} from "../api";
+import Locale from "../../locales";
+import {
+  isVisionModel,
+  isDalle3 as _isDalle3,
+} from "@/app/utils";
+
+export interface OpenAIListModelResponse {
+  object: string;
+  data: Array<{
+    id: string;
+    object: string;
+    root: string;
+  }>;
+}
+
+export interface RequestPayload {
+  messages: {
+    role: "system" | "user" | "assistant";
+    content: string | MultimodalContent[];
+  }[];
+  stream?: boolean;
+  model: string;
+  temperature: number;
+  presence_penalty: number;
+  frequency_penalty: number;
+  top_p: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+}
+
+export interface DalleRequestPayload {
+  model: string;
+  prompt: string;
+  response_format: "url" | "b64_json";
+  n: number;
+  size: ModelSize;
+  quality: DalleQuality;
+  style: DalleStyle;
+}
 
 export class DeepSeekApi implements LLMApi {
   private disableListModels = true;
