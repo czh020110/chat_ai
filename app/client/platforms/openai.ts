@@ -100,7 +100,7 @@ export class ChatGPTApi implements LLMApi {
 
     if (baseUrl.length === 0) {
       const isApp = !!getClientConfig()?.isApp;
-      const apiPath = isAzure ? ApiPath.Azure : ApiPath.OpenAI;
+      const apiPath = isAzure ? ApiPath.Azure : ApiPath.DeepSeek;
       baseUrl = isApp ? OPENAI_BASE_URL : apiPath;
     }
 
@@ -110,7 +110,7 @@ export class ChatGPTApi implements LLMApi {
     if (
       !baseUrl.startsWith("http") &&
       !isAzure &&
-      !baseUrl.startsWith(ApiPath.OpenAI)
+      !baseUrl.startsWith(ApiPath.DeepSeek)
     ) {
       baseUrl = "https://" + baseUrl;
     }
